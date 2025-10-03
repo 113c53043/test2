@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>詐騙數據分析 v1.0 (網頁版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SheetJS/xlsx.js 用於讀取 Excel 檔案 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'Microsoft JhengHei', sans-serif;
+        }
+        #spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 md:p-8 space-y-6">
+        <header class="text-center">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-900">詐騙數據分析</h1>
+            <p class="text-gray-500 mt-2">直接在瀏覽器中分析詐騙案件與電話數據</p>
+        </header>
+
+        <main class="space-y-6">
+            <!-- 檔案選擇區域 -->
+            <div id="file-drop-area" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center transition-all duration-300">
+                <label for="file-upload" class="cursor-pointer">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <span class="mt-2 block text-sm font-medium text-gray-900">選擇或拖曳 Excel 檔案到此處</span>
+                    <p id="file-name" class="mt-1 text-xs text-gray-500">尚未選擇檔案</p>
+                </label>
+                <input id="file-upload" name="file-upload" type="file" class="sr-only" accept=".xlsx, .xls">
+            </div>
+
+            <!-- 分析功能按鈕 -->
+            <div id="controls-container" class="space-y-4 hidden">
+                 <p class="text-center text-sm font-medium text-gray-600">已選擇檔案，請選擇要執行的分析：</p>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <button id="analyze-cases-button" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:bg-gray-400 flex items-center justify-center space-x-2">
+                        <div class="spinner h-5 w-5 rounded-full border-2 border-white border-t-transparent animate-spin hidden"></div>
+                        <span>功能一：詐騙案件總體分析</span>
+                    </button>
+                    <button id="analyze-phones-button" class="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all disabled:bg-gray-400 flex items-center justify-center space-x-2">
+                         <div class="spinner h-5 w-5 rounded-full border-2 border-white border-t-transparent animate-spin hidden"></div>
+                        <span>功能二：高頻詐騙電話分析</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 結果顯示區域 -->
+            <div id="result-container" class="space-y-2 hidden">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-semibold text-gray-800">分析結果：</h3>
+                    <button id="clear-button" class="text-sm text-gray-500 hover:text-red-600 transition-colors">清除結果</button>
+                </div>
+                <textarea id="result-text" readonly class="w-full h-72 bg-gray-50 text-gray-800 text-sm rounded-lg p-4 border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></textarea>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    // --- DOM 元素 ---
+    const fileUpload = document.getElementById('file-upload');
+    const fileNameDisplay = document.getElementById('file-name');
+    const fileDropArea = document.getElementById('file-drop-area');
+    const controlsContainer = document.getElementById('controls-container');
+    const analyzeCasesButton = document.getElementById('analyze-cases-button');
+    const analyzePhonesButton = document.getElementById('analyze-phones-button');
+    const resultContainer = document.getElementById('result-container');
+    const resultText = document.getElementById('result-text');
+    const clearButton = document.getElementById('clear-button');
+
+    let selectedFile = null;
+    let parsedData = null;
+
+    // --- 事件監聽 ---
+    fileUpload.addEventListener('change', handleFileSelect);
+    
+    // 檔案拖曳功能
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        fileDropArea.addEventListener(eventName, preventDefaults, false);
+    });
+    ['dragenter', 'dragover'].forEach(eventName => {
+        fileDropArea.addEventListener(eventName, () => fileDropArea.classList.add('bg-blue-50'), false);
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+        fileDropArea.addEventListener(eventName, () => fileDropArea.classList.remove('bg-blue-50'), false);
+    });
+    fileDropArea.addEventListener('drop', handleDrop, false);
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length > 0) {
+            fileUpload.files = files;
+            handleFileSelect({ target: fileUpload });
+        }
+    }
+
+    async function handleFileSelect(event) {
+        selectedFile = event.target.files[0];
+        if (selectedFile) {
+            fileNameDisplay.textContent = selectedFile.name;
+            controlsContainer.classList.remove('hidden');
+            resultContainer.classList.add('hidden');
+            resultText.value = '';
+            
+            // 預先解析檔案
+            try {
+                parsedData = await parseExcelFile(selectedFile);
+            } catch (error) {
+                alert(`讀取檔案失敗: ${error.message}`);
+                parsedData = null;
+                controlsContainer.classList.add('hidden');
+                fileNameDisplay.textContent = '檔案解析失敗，請重新選擇';
+            }
+        } else {
+            fileNameDisplay.textContent = '尚未選擇檔案';
+            controlsContainer.classList.add('hidden');
+            parsedData = null;
+        }
+    }
+    
+    analyzeCasesButton.addEventListener('click', () => runAnalysis('cases'));
+    analyzePhonesButton.addEventListener('click', () => runAnalysis('phones'));
+    clearButton.addEventListener('click', clearResults);
+
+    // --- 主流程控制 ---
+    async function runAnalysis(type) {
+        if (!parsedData) {
+            alert('沒有可分析的資料，請先選擇一個有效的 Excel 檔案。');
+            return;
+        }
+
+        const button = type === 'cases' ? analyzeCasesButton : analyzePhonesButton;
+        const spinner = button.querySelector('.spinner');
+
+        // 鎖定 UI
+        button.disabled = true;
+        spinner.classList.remove('hidden');
+        
+        resultText.value = `正在分析檔案中，請稍候...`;
+        resultContainer.classList.remove('hidden');
+        
+        // 使用 setTimeout 確保 UI 更新
+        setTimeout(() => {
+            try {
+                let report = '';
+                if (type === 'cases') {
+                    report = generateFraudReport(parsedData);
+                } else {
+                    report = analyzePhoneNumbers(parsedData);
+                }
+                resultText.value = report;
+            } catch (error) {
+                console.error(`分析失敗 (${type}):`, error);
+                resultText.value = `分析檔案時發生錯誤：\n${error.stack}`;
+            } finally {
+                // 解鎖 UI
+                button.disabled = false;
+                spinner.classList.add('hidden');
+            }
+        }, 10);
+    }
+    
+    function clearResults() {
+        resultText.value = '';
+        resultContainer.classList.add('hidden');
+    }
+
+    // --- 後端邏輯函式 (Python -> JS 轉換) ---
+    
+    async function parseExcelFile(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                    const sheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[sheetName];
+                    // skiprows=2
+                    const range = XLSX.utils.decode_range(worksheet['!ref']);
+                    range.s.r = 2; 
+                    worksheet['!ref'] = XLSX.utils.encode_range(range);
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+                    resolve(jsonData);
+                } catch (err) {
+                    reject(err);
+                }
+            };
+            reader.onerror = (err) => reject(err);
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function formatCurrency(n) {
+        if (typeof n !== 'number' || isNaN(n)) return "0";
+        n = Math.round(n);
+        if (n === 0) return "0";
+        const yi = Math.floor(n / 100000000);
+        const wan = Math.floor((n % 100000000) / 10000);
+        const rest = n % 10000;
+        const parts = [];
+        if (yi > 0) parts.push(`${yi}億`);
+        if (wan > 0) parts.push(`${wan.toLocaleString('en-US')}萬`);
+        if (rest > 0) parts.push(`${rest.toLocaleString('en-US')}`);
+        return parts.join('') || "0";
+    }
+
+    function formatCurrencyForTotal(n) {
+        const formattedStr = formatCurrency(n);
+        return `${formattedStr}元`;
+    }
+
+    function cleanAmountColumn(data, columnName) {
+        return data.map(row => {
+            const value = row[columnName];
+            if (value === null || typeof value === 'undefined') return 0;
+            const valueStr = String(value).trim().replace(/,|元|\$/g, '');
+            if (!valueStr) return 0;
+            const num = parseFloat(valueStr);
+            return isNaN(num) ? 0 : num;
+        });
+    }
+    
+    function standardizeInstitution(name) {
+        if (typeof name !== 'string') return name;
+        name = name.trim();
+        if (name === '不詳') return '不詳';
+        if (['7-11賣貨便', '賣貨便', '統一超商', '7-11'].some(term => name.includes(term))) return '7-11賣貨便';
+        if (['好賣+', '全家好賣+'].some(term => name.includes(term))) return '好賣+';
+        if (['台快快遞', '台灣快遞'].some(term => name.includes(term))) return '台快快遞';
+        return name;
+    }
+
+    function extractMainPoliceDept(unitName) {
+        if (typeof unitName !== 'string') return unitName;
+        const index = unitName.indexOf('警察局');
+        return index !== -1 ? unitName.substring(0, index + 3) : unitName;
+    }
+
+    function getYesterdayDateStr() {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        return yesterday.getDate().toString();
+    }
+
+    function generateFraudReport(data) {
+        // 清理與準備資料
+        const amountColumnName = Object.keys(data[0]).find(k => k.includes('詐騙金額')) || '詐騙金額';
+        const methodColumnName = Object.keys(data[0]).find(k => k.includes('詐騙手法')) || '詐騙手法';
+        const institutionColumnName = Object.keys(data[0]).find(k => k.includes('冒用機構')) || '冒用機構';
+        const caseNoColumnName = Object.keys(data[0]).find(k => k.includes('開案編號')) || '開案編號';
+        const unitColumnName = Object.keys(data[0]).find(k => k.includes('筆錄單位')) || '筆錄單位';
+
+        data.forEach(row => {
+            row[amountColumnName] = (cleanAmountColumn([row], amountColumnName))[0];
+        });
+        
+        // 1. 基本統計
+        const totalCases = data.length;
+        const otherCasesCount = data.filter(r => r[methodColumnName] === '其他').length;
+        const totalLoss = data.reduce((sum, row) => sum + (row[amountColumnName] || 0), 0);
+        const outputPart1 = `1、全國受理案件(含其他${otherCasesCount}件)計${totalCases}件，總財損${formatCurrencyForTotal(totalLoss)}。`;
+
+        // 2. 高額案件分析
+        const highValueCases = data.filter(r => r[amountColumnName] >= 5000000);
+        let outputPart2 = `2、全國5百萬以上財損${highValueCases.length}件，`;
+        if (highValueCases.length > 0) {
+            const maxLossCase = highValueCases.reduce((max, row) => row[amountColumnName] > max[amountColumnName] ? row : max, highValueCases[0]);
+            const maxLossDetails = `最高財損${formatCurrency(maxLossCase[amountColumnName])}元${maxLossCase[methodColumnName] || 'N/A'}~案號：${maxLossCase[caseNoColumnName] || 'N/A'}、受理單位：${extractMainPoliceDept(maxLossCase[unitColumnName] || 'N/A')}`;
+            const methodCounts = highValueCases.reduce((counts, row) => {
+                counts[row[methodColumnName]] = (counts[row[methodColumnName]] || 0) + 1;
+                return counts;
+            }, {});
+            const methodsSummary = Object.entries(methodCounts).map(([method, count]) => `${method}${count}件`).join("、");
+            outputPart2 += `${maxLossDetails}。${methodsSummary}。`;
+        } else {
+            outputPart2 += "無相關案件。";
+        }
+
+        // 3. 解除分期付款分析
+        const installmentCases = data.filter(r => r[methodColumnName] && r[methodColumnName].includes('解除分期付款'));
+        let installmentSummary = "";
+        if (installmentCases.length > 0) {
+            const institutionCounts = installmentCases.reduce((counts, row) => {
+                const standardized = standardizeInstitution(row[institutionColumnName]);
+                if (standardized !== '不詳') {
+                    counts[standardized] = (counts[standardized] || 0) + 1;
+                }
+                return counts;
+            }, {});
+            const top3 = Object.entries(institutionCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+            if (top3.length > 0) {
+                const summaryParts = top3.map(([name, count]) => `${name}${count}件`);
+                installmentSummary = `(其中冒用機構最多為：${summaryParts.join(', ')})`;
+            }
+        }
+        const outputPart3 = `3、解除分期付款詐騙${installmentCases.length}件${installmentSummary}。`;
+        
+        // 4. 值日報告
+        const dutyReport = `昨(${getYesterdayDateStr()})日08-20 00副值日、20-02 00值日、02-08 00代理。`;
+
+        return `詐騙案件總體分析報告\n${'='.repeat(40)}\n${outputPart1}\n${outputPart2}\n${outputPart3}\n${dutyReport}`;
+    }
+
+    function analyzePhoneNumbers(data) {
+        const originalColumns = Object.keys(data[0] || {});
+        const phoneCol = originalColumns.find(c => c.includes('詐騙電話')) || '詐騙電話';
+        const caseNoCol = originalColumns.find(c => c.includes('開案編號')) || '開案編號';
+        const idCol = originalColumns.find(c => c.includes('身分證號')) || '身分證號';
+        const dateCol = originalColumns.find(c => c.includes('受理日')) || '受理日';
+        const typeCol = originalColumns.find(c => c.includes('案件類型')) || '案件類型';
+
+        if (!originalColumns.includes(phoneCol) || !originalColumns.includes(caseNoCol)) {
+            return `檔案缺少 '${phoneCol}' 或 '${caseNoCol}' 基礎欄位。`;
+        }
+        
+        let explodedData = [];
+        data.forEach(row => {
+            if (row[phoneCol]) {
+                const phones = String(row[phoneCol]).split(/[、,/\s]+/);
+                phones.forEach(phone => {
+                    const cleanedPhone = phone.replace(/\D/g, '');
+                    if (cleanedPhone.length >= 8) {
+                        explodedData.push({ ...row, [phoneCol]: cleanedPhone });
+                    }
+                });
+            }
+        });
+
+        if (explodedData.length === 0) return "未在檔案中找到有效的電話號碼可供分析。";
+
+        let analysisData;
+        let warningNote = "";
+        if (originalColumns.includes(idCol)) {
+            const uniqueEntries = new Set();
+            analysisData = explodedData.filter(row => {
+                 const id = String(row[idCol] || '').trim();
+                 if (id) {
+                     const key = `${row[phoneCol]}_${id}`;
+                     if (uniqueEntries.has(key)) return false;
+                     uniqueEntries.add(key);
+                 }
+                 return true;
+            });
+        } else {
+            analysisData = explodedData;
+            warningNote = `\n(註：因缺少'${idCol}'欄位，次數未過濾重複報案)`;
+        }
+
+        const phoneCounts = analysisData.reduce((counts, row) => {
+            counts[row[phoneCol]] = (counts[row[phoneCol]] || 0) + 1;
+            return counts;
+        }, {});
+        
+        const highFreqPhones = Object.entries(phoneCounts).filter(([phone, count]) => count >= 3);
+        if (highFreqPhones.length === 0) return `高頻詐騙電話分析\n${'='.repeat(40)}\n無出現3次以上之詐騙電話。${warningNote}`;
+        
+        const caseInfoMapping = explodedData.reduce((map, row) => {
+            const phone = row[phoneCol];
+            if (!map[phone]) map[phone] = new Set();
+            
+            let displayParts = [];
+            if (originalColumns.includes(dateCol) && row[dateCol]) {
+                try {
+                    // 嘗試解析不同格式的日期
+                    const date = new Date(row[dateCol]);
+                    if (!isNaN(date)) {
+                        displayParts.push(date.toISOString().split('T')[0]);
+                    } else {
+                        displayParts.push('無日期');
+                    }
+                } catch {
+                    displayParts.push('無日期');
+                }
+            }
+            displayParts.push(String(row[caseNoCol] || ''));
+            if (originalColumns.includes(typeCol)) {
+                displayParts.push(`(${String(row[typeCol] || '無類型')})`);
+            }
+            map[phone].add(displayParts.join(' ').trim());
+            return map;
+        }, {});
+        
+        const reportLines = highFreqPhones.sort((a, b) => b[1] - a[1]).map(([phone, count]) => {
+            const caseDetails = caseInfoMapping[phone] ? Array.from(caseInfoMapping[phone]).sort().join("、") : "無詳細資料";
+            return `  - 電話「${phone}」出現 ${count} 次，相關案件：${caseDetails}`;
+        });
+        
+        return `高頻詐騙電話分析報告\n${'='.repeat(40)}\n高頻詐騙電話分析(3件以上)${warningNote}\n${reportLines.join('\n')}`;
+    }
+
+    </script>
+</body>
+</html>
